@@ -106,7 +106,6 @@ jobs:
         if: env.DRY_RUN == 'true'
         run: |
           echo "Running in dry-run mode. No changes will be pushed or PRs created/closed."
-          # Optionally, add more validation logic here (e.g., check grouped files, print planned actions).
 
       - name: Group PRs by ecosystem and cherry-pick with retry
         run: |
@@ -144,10 +143,12 @@ jobs:
 
           for file in "${grouped_files[@]}"; do
             group_name=$(basename "$file" .txt)
-            # Sanitize group_name: allow only alphanum, dash, underscore
             safe_group_name=$(echo "$group_name" | tr -c '[:alnum:]_-' '-')
             branch_name="security/grouped-${safe_group_name}-updates"
             git checkout -B "$branch_name"
+
+            git fetch origin "$branch_name" || true
+            git merge origin/"$branch_name" --no-edit || true
 
             while read -r number ref group; do
               git fetch origin "$ref"
@@ -174,17 +175,10 @@ jobs:
               fi
             done < "$file"
 
-            # Non-destructive push: check for drift before force-pushing
             if [ "$DRY_RUN" == "true" ]; then
               echo "[DRY-RUN] Skipping git push for $branch_name"
             else
-              remote_hash=$(git ls-remote origin "$branch_name" | awk '{print $1}')
-              local_hash=$(git rev-parse "$branch_name")
-              if [ -n "$remote_hash" ] && [ "$remote_hash" != "$local_hash" ]; then
-                echo "Remote branch $branch_name has diverged. Skipping force-push to avoid overwriting changes."
-                continue
-              fi
-              git push --force-with-lease origin "$branch_name"
+              git push --force origin "$branch_name"
             fi
 
             new_lines=""
@@ -194,14 +188,12 @@ jobs:
             done < "$file"
 
             pr_title="chore(deps): bump grouped $group_name Dependabot updates"
-            # Add --state open to ensure only open PRs are considered
             existing_url=$(gh pr list --head "$branch_name" --base "$TARGET_BRANCH" --state open --json url --jq '.[0].url // empty')
 
             if [ -n "$existing_url" ]; then
               echo "PR already exists: $existing_url"
               pr_url="$existing_url"
               current_body=$(gh pr view "$pr_url" --json body --jq .body)
-              # Simplified duplicate-detection using Bash array
               IFS=$'\n' read -d '' -r -a current_lines < <(printf '%s\0' "$current_body")
               IFS=$'\n' read -d '' -r -a new_lines_arr < <(printf '%b\0' "$new_lines")
               declare -A seen
@@ -214,9 +206,8 @@ jobs:
                   filtered_lines+="$line\n"
                 fi
               done
-              # Ensure a newline separator between the existing body and new lines
               if [ -n "$filtered_lines" ]; then
-                new_body="$current_body"$'\n'"$filtered_lines"
+                new_body="$current_body"$'\n'$filtered_lines
               else
                 new_body="$current_body"
               fi
